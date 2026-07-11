@@ -1,6 +1,11 @@
 # AIngle SDK for Go
 
-Official Go SDK for [AIngle](https://apilium.com) - the ultra-light distributed ledger for IoT devices.
+Go SDK for [AIngle](https://apilium.com), the verifiable memory cortex for AI agents.
+
+AIngle Cortex gives an agent durable memory and a semantic graph over plain HTTP.
+You can remember facts, recall them by text or tags, run vector similarity search,
+and store subject-predicate-object triples that you can query by pattern. The SDK
+uses only the Go standard library.
 
 ## Installation
 
@@ -22,123 +27,109 @@ import (
 )
 
 func main() {
-	// Create client with default config
-	client := aingle.NewDefaultClient()
-	defer client.Close()
+	// Defaults to http://127.0.0.1:19090. Add options as needed.
+	client := aingle.NewClient()
 
 	ctx := context.Background()
 
-	// Create an entry
-	hash, err := client.CreateEntry(ctx, map[string]interface{}{
-		"type":  "sensor_reading",
-		"value": 23.5,
-		"unit":  "celsius",
+	// Remember a fact.
+	remembered, err := client.Remember(ctx, aingle.RememberRequest{
+		EntryType:  "note",
+		Data:       map[string]any{"text": "The launch is on Friday."},
+		Tags:       []string{"launch", "schedule"},
+		Importance: 0.8,
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("Created entry: %s\n", hash)
+	fmt.Printf("remembered %s\n", remembered.ID)
 
-	// Retrieve an entry
-	entry, err := client.GetEntry(ctx, hash)
+	// Recall it by text.
+	results, err := client.Recall(ctx, aingle.RecallRequest{
+		Text: "when is the launch",
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("Entry: %+v\n", entry)
-
-	// Get node info
-	info, err := client.GetNodeInfo(ctx)
-	if err != nil {
-		log.Fatal(err)
+	for _, r := range results {
+		fmt.Printf("[%.2f] %s: %v\n", r.Relevance, r.EntryType, r.Data)
 	}
-	fmt.Printf("Node version: %s\n", info.Version)
 }
 ```
 
-## Subscribe to Real-time Updates
+## Configuration
+
+`NewClient` takes functional options. All are optional.
 
 ```go
-package main
-
-import (
-	"context"
-	"fmt"
-	"log"
-	"time"
-
-	aingle "github.com/ApiliumCode/aingle-sdk-go"
+client := aingle.NewClient(
+	aingle.WithBaseURL("http://127.0.0.1:19090"),
+	aingle.WithToken("my-namespace-token"),
+	aingle.WithTimeout(15*time.Second),
 )
+```
 
-func main() {
-	client := aingle.NewDefaultClient()
-	defer client.Close()
+## Triples and the semantic graph
 
-	ctx := context.Background()
+A triple is a subject, a predicate, and an object. The object is an untagged
+value: a string, number, boolean, or an IRI node reference. Use `NodeRef` to
+build a node reference, which serializes to `{"node": "..."}`.
 
-	entries, unsubscribe, err := client.Subscribe(ctx)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer unsubscribe()
+```go
+// Object as a string literal.
+_, err := client.CreateTriple(ctx, "alice", "knows", "bob")
 
-	// Listen for 60 seconds
-	timeout := time.After(60 * time.Second)
-	for {
-		select {
-		case entry := <-entries:
-			fmt.Printf("New entry: %s\n", entry.Hash)
-		case <-timeout:
-			return
-		}
-	}
+// Object as a node reference (IRI).
+_, err = client.CreateTriple(ctx, "alice", "homepage",
+	aingle.NodeRef{Node: "http://example.org/alice"})
+
+// Query by pattern. Leave a field empty to treat it as a wildcard.
+res, err := client.Query(ctx, aingle.QueryRequest{Subject: "alice"})
+for _, t := range res.Matches {
+	fmt.Printf("%s %s %v\n", t.Subject, t.Predicate, t.Object)
 }
 ```
 
-## API Reference
+On output, a triple's `Object` decodes into `interface{}`. A node reference
+decodes into a `map[string]any` with a `node` key.
 
-### Client
+## Error handling
+
+Non-2xx responses return a typed `*AIngleError` carrying the HTTP status and a
+message.
+
+```go
+_, err := client.GetTriple(ctx, "missing-id")
+var apiErr *aingle.AIngleError
+if errors.As(err, &apiErr) {
+	fmt.Printf("status %d: %s\n", apiErr.Status, apiErr.Message)
+}
+```
+
+## API reference
 
 | Method | Description |
 |--------|-------------|
-| `NewClient(config)` | Create client with config |
-| `NewDefaultClient()` | Create client with defaults |
-| `CreateEntry(ctx, data)` | Create a new entry |
-| `GetEntry(ctx, hash)` | Retrieve an entry by hash |
-| `GetNodeInfo(ctx)` | Get node information |
-| `Subscribe(ctx)` | Subscribe to real-time updates |
-| `Close()` | Close the client |
-
-### Configuration
-
-```go
-config := aingle.ClientConfig{
-    NodeURL: "http://localhost:8080",
-    WSURL:   "ws://localhost:8081",
-    Timeout: 30 * time.Second,
-    Debug:   false,
-}
-client := aingle.NewClient(config)
-```
-
-## Development
-
-```bash
-# Run tests
-go test ./...
-
-# Run tests with coverage
-go test -cover ./...
-
-# Run linter
-golangci-lint run
-```
+| `Health(ctx)` | Server health and subsystem status |
+| `Stats(ctx)` | Graph and server statistics |
+| `Remember(ctx, req)` | Store a memory entry, returns its id |
+| `Recall(ctx, req)` | Retrieve memories by text, tags, or type |
+| `Search(ctx, req)` | Vector similarity search over memories |
+| `MemoryStats(ctx)` | Short and long term memory statistics |
+| `Forget(ctx, id)` | Delete a memory entry |
+| `CreateTriple(ctx, subject, predicate, object)` | Insert a triple |
+| `ListTriples(ctx, opts)` | List triples with optional filters |
+| `GetTriple(ctx, id)` | Fetch a triple by id |
+| `DeleteTriple(ctx, id)` | Delete a triple by id |
+| `Query(ctx, req)` | Match triples against a pattern |
+| `Subjects(ctx, opts)` | List distinct subjects |
+| `Predicates(ctx, opts)` | List distinct predicates |
 
 ## License
 
-Apache-2.0 - see [LICENSE](LICENSE)
+Apache-2.0, see [LICENSE](LICENSE).
 
 ## Links
 
 - [AIngle Core](https://github.com/ApiliumCode/aingle)
 - [Documentation](https://docs.apilium.com)
-- [Discord](https://discord.gg/apilium)
